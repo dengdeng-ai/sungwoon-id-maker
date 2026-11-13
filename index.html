@@ -119,6 +119,14 @@
           <div class="drop-t">내 로고 올리기<small>교표 자리에 대신 들어가요 (투명 PNG 추천)</small></div>
           <input type="file" id="logoFile" accept="image/*" hidden>
         </label>
+        <div style="margin-top:10px">
+          <label>크기</label>
+          <input type="range" id="logoScale" min="0.5" max="1.8" step="0.01" value="1" style="width:100%;accent-color:#1f2f55">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:11px;color:#aaa">카드 미리보기의 로고를 끌어서 위치 조절</span>
+            <button type="button" class="link" id="logoPosReset">위치 초기화</button>
+          </div>
+        </div>
         <button type="button" class="link" id="logoReset" style="display:none">기본 교표로 되돌리기</button>
       </div>
 
@@ -215,11 +223,21 @@ function drawBg(c, img, w, h) {
   c.drawImage(img, (w - img.width * sc) / 2, (h - img.height * sc) / 2, img.width * sc, img.height * sc);
 }
 const L_ = img => customLogo || img;
+// 로고 위치/크기 (모든 로고 자리에 같은 비율로 적용)
+let logoScale = 1, logoDX = 0, logoDY = 0;      // DX/DY: 로고 칸 크기 대비 비율
+const logoRects = new Map();                      // 캔버스별 작은 로고 칸 (드래그용)
 function dLogo(c, img, x, y, w, h) {
-  if (!customLogo) { c.drawImage(img, x, y, w, h); return; }
-  const sc = Math.min(w / customLogo.width, h / customLogo.height);
-  const dw = customLogo.width * sc, dh = customLogo.height * sc;
-  c.drawImage(customLogo, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
+  const src = customLogo || img;
+  let dw = w, dh = h;
+  if (customLogo) { const sc = Math.min(w / src.width, h / src.height); dw = src.width * sc; dh = src.height * sc; }
+  dw *= logoScale; dh *= logoScale;
+  const cx = x + w / 2 + logoDX * w, cy = y + h / 2 + logoDY * h;
+  if (w < 120) {
+    const list = logoRects.get(c.canvas) || [];
+    list.push({ x: cx - dw / 2, y: cy - dh / 2, w: dw, h: dh, bw: w, bh: h, m: c.getTransform() });
+    logoRects.set(c.canvas, list);
+  }
+  c.drawImage(src, cx - dw / 2, cy - dh / 2, dw, dh);
 }
 // 사진 위치/크기 (드래그·확대)
 let photoZoom = 1, photoOX = 0, photoOY = 0;   // OX/OY: -1~1 (cover 상태에서 남는 여백 비율)
@@ -686,6 +704,7 @@ function drawBack() {
 
 let style = '2004';
 function draw() {
+  logoRects.clear();
   const vertical = style === 'new';
   const w = vertical ? 416 : 660, h = vertical ? 660 : 416;
   [fv, bv].forEach(cv => {
@@ -770,7 +789,7 @@ function drawFront04() {
   if (bgImg('front')) drawBg(c, bgImg('front'), W4, H4);
 
   // 교표 워터마크
-  if (bgMode.front === 'default' && ok(L_(sealNavy))) { c.globalAlpha = 0.07; dLogo(c, sealNavy, 300, 60, 330, 330); c.globalAlpha = 1; }
+  if (bgMode.front === 'default' && ok(L_(sealNavy))) { c.globalAlpha = 0.07; dLogo(c, sealNavy, 237, 55, 350, 350); c.globalAlpha = 1; }
 
   // 상단 띠
   c.fillStyle = '#1d2d5c';
@@ -1184,6 +1203,38 @@ document.querySelectorAll('.bgseg').forEach(seg => {
     r.onload = ev => { const img = new Image(); img.onload = () => { bgUser[side] = img; setMode('image'); }; img.src = ev.target.result; };
     r.readAsDataURL(f); file.value = '';
   });
+});
+
+$('logoScale').addEventListener('input', e => { logoScale = +e.target.value; draw(); });
+$('logoPosReset').addEventListener('click', () => { logoScale = 1; logoDX = logoDY = 0; $('logoScale').value = 1; draw(); });
+[$('card'), $('back')].forEach(cv => {
+  let drag = null;
+  const hit = e => {
+    const r = cv.getBoundingClientRect();
+    const x = (e.clientX - r.left) * cv.width / r.width, y = (e.clientY - r.top) * cv.height / r.height;
+    for (const L of logoRects.get(cv) || []) {
+      const p = L.m.inverse().transformPoint(new DOMPoint(x, y));
+      if (p.x >= L.x && p.x <= L.x + L.w && p.y >= L.y && p.y <= L.y + L.h) return { L, p };
+    }
+    return null;
+  };
+  const toLocal = (e, L) => {
+    const r = cv.getBoundingClientRect();
+    return L.m.inverse().transformPoint(new DOMPoint((e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height));
+  };
+  cv.addEventListener('pointerdown', e => {
+    const h = hit(e); if (!h) return;
+    drag = { L: h.L, sx: h.p.x, sy: h.p.y, dx: logoDX, dy: logoDY };
+    cv.setPointerCapture(e.pointerId); e.preventDefault(); e.stopImmediatePropagation();
+  }, true);
+  cv.addEventListener('pointermove', e => {
+    if (!drag) { if (hit(e)) cv.style.cursor = 'move'; return; }
+    const p = toLocal(e, drag.L);
+    logoDX = Math.max(-2, Math.min(2, drag.dx + (p.x - drag.sx) / drag.L.bw));
+    logoDY = Math.max(-2, Math.min(2, drag.dy + (p.y - drag.sy) / drag.L.bh));
+    draw(); e.stopImmediatePropagation();
+  }, true);
+  ['pointerup', 'pointercancel'].forEach(t => cv.addEventListener(t, () => { drag = null; }, true));
 });
 
 autoFill(true);
